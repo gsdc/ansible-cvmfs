@@ -19,8 +19,8 @@
     map=n
     if [ "$ipa" = y ] && [ "$tool" = y ] && command -v ipa >/dev/null 2>&1; then
       cc=$(mktemp)
-      if KRB5CCNAME=FILE:$cc kinit -k >/dev/null 2>&1; then
-        KRB5CCNAME=FILE:$cc ipa automountkey-find '{{ cvmfs_ipa_automount_location }}' auto.master \
+      if KRB5CCNAME=FILE:$cc timeout 60 kinit -k >/dev/null 2>&1; then
+        KRB5CCNAME=FILE:$cc timeout 120 ipa automountkey-find '{{ cvmfs_ipa_automount_location }}' auto.master \
           --key='{{ cvmfs_mount_point }}' 2>/dev/null | grep -q 'program:/etc/auto.cvmfs' && map=y
       else
         map=nokinit

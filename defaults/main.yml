@@ -36,7 +36,7 @@ cvmfs_influx_extra_fields: ""
 #       export CMS_LOCAL_SITE=/cvmfs/cms.cern.ch/SITECONF/T3_KR_KISTI
 cvmfs_local_configs: {}
 cvmfs_absent_configs: []            # 지울 경로 목록
-cvmfs_reload_on_change: true        # 설정이 바뀌면 cvmfs_config reload (마운트를 내리지 않음)
+cvmfs_reload_on_change: false       # 설정이 바뀌면 cvmfs_config reload. 작업이 몰린 노드에서 reload 가 crash 한 사례가 있어(2026-09-28) 기본은 끔 -- 새 값은 저장소가 다시 마운트될 때 반영
 cvmfs_probe: false                  # 마지막에 cvmfs_config probe 로 확인
 
 # ---------------------------------------------------------------- 캐시 전용 LV (LVM 호스트)

@@ -37,7 +37,7 @@ CernVM-FS **클라이언트** 설치·설정 role.
 | `cvmfs_config_repo` | `{}` | config 저장소 설정 (galaxyproject.cvmfs 와 같은 형식) |
 | `cvmfs_local_configs` | `{}` | 경로 → 내용. 예: `/etc/cvmfs/config.d/cms.cern.ch.local` |
 | `cvmfs_absent_configs` | `[]` | 지울 경로 |
-| `cvmfs_reload_on_change` | `true` | 설정이 바뀌면 `cvmfs_config reload` |
+| `cvmfs_reload_on_change` | `false` | 설정이 바뀌면 `cvmfs_config reload`. 작업이 몰린 노드에서 reload 가 crash 한 사례가 있어 기본은 끔 (새 값은 재마운트 때 반영) |
 | `cvmfs_probe` | `false` | 마지막에 `cvmfs_config probe` |
 | `cvmfs_cache_lv` | `false` | 캐시를 전용 LV 에 둔다 (VG 는 `cvmfs_cache_lv_vg` → `cache` → `var` LV 의 VG 순) |
 | `cvmfs_cache_lv_mb` | `quota*1.2+1024` | LV 크기 (MB) |
