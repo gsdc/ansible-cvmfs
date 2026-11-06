@@ -1,35 +1,48 @@
 ---
-- name: Include initial OS-specific tasks
-  ansible.builtin.include_tasks: init_{{ ansible_os_family | lower }}.yml
-  vars:
-    _cvmfs_role: client
-    _cvmfs_upgrade: "{{ cvmfs_upgrade_client }}"
+- name: 키 디렉토리
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ cvmfs_keys | map(attribute='path') | map('dirname') | unique }}"
 
-- name: Include key setup tasks
-  ansible.builtin.include_tasks: keys.yml
+- name: 키
+  ansible.builtin.copy:
+    content: "{{ item.key }}"
+    dest: "{{ item.path }}"
+    owner: "{{ item.owner | default('root') }}"
+    group: root
+    mode: "0444"
+  loop: "{{ cvmfs_keys }}"
+  loop_control:
+    label: "{{ item.path }}"
 
-- name: Check CernVM-FS for setup
+- name: cvmfs_config chksetup
   ansible.builtin.command: cvmfs_config chksetup
+  register: _cvmfs_chksetup
   changed_when: false
-  ignore_errors: true
-  register: cvmfs_config_chksetup_out
+  failed_when: false
+  check_mode: false
 
-- name: Ensure AutoFS is enabled + running
+- name: autofs 활성화
   ansible.builtin.service:
     name: autofs
     enabled: true
     state: started
 
-- name: Perform AutoFS and FUSE configuration for CernVM-FS
+- name: cvmfs_config setup (autofs 맵이 없을 때)
   ansible.builtin.command: cvmfs_config setup
-  notify:
-    - reload autofs
-  when: not ansible_check_mode and "CernVM-FS map is not referenced" in cvmfs_config_chksetup_out.stdout
+  notify: Reload autofs
+  when:
+    - not ansible_check_mode
+    - "'CernVM-FS map is not referenced' in _cvmfs_chksetup.stdout"
 
-- name: Configure CernVM-FS config repository
-  when: cvmfs_config_repo and cvmfs_config_repo_supported
-  ansible.builtin.block:
-    - name: Create config repo config
+- name: config 저장소
+  when: cvmfs_config_repo | length > 0
+  block:
+    - name: config 저장소 설정
       ansible.builtin.copy:
         content: |
           ## This file is maintained by Ansible - CHANGES WILL BE OVERWRITTEN
@@ -38,9 +51,10 @@
         dest: /etc/cvmfs/config.d/{{ cvmfs_config_repo.repository.repository }}.conf
         owner: root
         group: root
-        mode: 0444
+        mode: "0444"
+      notify: Reload cvmfs
 
-    - name: Set config repo defaults
+    - name: config 저장소 기본값
       ansible.builtin.copy:
         content: |
           ## This file is maintained by Ansible - CHANGES WILL BE OVERWRITTEN
@@ -50,15 +64,18 @@
         dest: /etc/cvmfs/default.d/80-ansible-galaxyproject-cvmfs.conf
         owner: root
         group: root
-        mode: 0444
+        mode: "0444"
+      notify: Reload cvmfs
 
-    # This is here for transitioning from galaxy_cvmfs_repos_enabled == true config-repo
-    - name: Remove domain configuration
-      ansible.builtin.file:
-        path: /etc/cvmfs/domain.d/{{ cvmfs_config_repo.domain }}.conf
-        state: absent
+- name: domain.d 디렉토리
+  ansible.builtin.file:
+    path: /etc/cvmfs/domain.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
 
-- name: Configure CernVM-FS domain
+- name: 도메인 설정
   ansible.builtin.copy:
     content: |
       ## This file is maintained by Ansible - CHANGES WILL BE OVERWRITTEN
@@ -68,61 +85,57 @@
     dest: /etc/cvmfs/domain.d/{{ item.domain }}.conf
     owner: root
     group: root
-    mode: 0444
-  with_items: "{{ cvmfs_server_urls }}"
+    mode: "0644"
+  loop: "{{ cvmfs_server_urls }}"
+  loop_control:
+    label: "{{ item.domain }}"
+  notify: Reload cvmfs
 
-- name: Configure CernVM-FS global client settings
-  ansible.builtin.copy:
-    content: |
-      CVMFS_REPOSITORIES="{%- for repo in cvmfs_repositories -%}{{ ',' if loop.index0 > 0 else '' }}{{ repo.repository }}{%- endfor -%}"
-      CVMFS_HTTP_PROXY="{{ cvmfs_http_proxies | join(';') }}"
-      CVMFS_QUOTA_LIMIT="{{ cvmfs_quota_limit | default('4000') }}"
-      CVMFS_CACHE_BASE="{{ cvmfs_cache_base | default('/var/lib/cvmfs') }}"
+- name: default.local
+  ansible.builtin.template:
+    src: default.local.j2
     dest: /etc/cvmfs/default.local
     owner: root
     group: root
-    mode: 0644
+    mode: "0644"
+  notify: Reload cvmfs
 
-- name: Include repository client options tasks
-  ansible.builtin.include_tasks: options.yml
-  vars:
-    _cvmfs_repo_option_key: client
-
-- name: Install cvmfs_wipecache setuid binary
-  ansible.builtin.copy:
-    src: cvmfs_wipecache.{{ _cvmfs_install_setuid_platform }}_{{ ansible_distribution_major_version }}
-    dest: /usr/local/bin/cvmfs_wipecache
-    owner: root
-    group: root
-    mode: 06755
-  when: cvmfs_install_setuid_cvmfs_wipecache | bool
-
-- name: Remove cvmfs_wipecache setuid binary
+- name: 저장소별 클라이언트 옵션 디렉토리
   ansible.builtin.file:
-    path: /usr/local/bin/cvmfs_wipecache
-    state: absent
-  when: not (cvmfs_install_setuid_cvmfs_wipecache | bool)
+    path: /etc/cvmfs/repositories.d/{{ item.repository }}
+    state: directory
+    mode: "0755"
+  loop: "{{ cvmfs_repositories | selectattr('client_options', 'defined') | list }}"
+  loop_control:
+    label: "{{ item.repository }}"
 
-- name: Install cvmfs_remount_sync setuid binary
+- name: 저장소별 클라이언트 옵션
+  ansible.builtin.lineinfile:
+    path: /etc/cvmfs/repositories.d/{{ item.0.repository }}/client.conf
+    regexp: "^{{ item.1.split('=')[0] }}=.*"
+    line: "{{ item.1 }}"
+    create: true
+    mode: "0644"
+  loop: "{{ cvmfs_repositories | subelements('client_options', skip_missing=true) }}"
+  loop_control:
+    label: "{{ item.0.repository }}: {{ item.1 }}"
+  notify: Reload cvmfs
+
+- name: 추가 설정 파일
   ansible.builtin.copy:
-    src: cvmfs_remount_sync.{{ _cvmfs_install_setuid_platform }}_{{ ansible_distribution_major_version }}
-    dest: /usr/local/bin/cvmfs_remount_sync
+    content: "{{ item.value }}"
+    dest: "{{ item.key }}"
     owner: root
     group: root
-    mode: 06755
-  when: cvmfs_install_setuid_cvmfs_remount_sync | bool
+    mode: "0644"
+  loop: "{{ cvmfs_local_configs | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  notify: Reload cvmfs
 
-- name: Remove cvmfs_remount_sync setuid binary
+- name: 지울 설정 파일
   ansible.builtin.file:
-    path: /usr/local/bin/cvmfs_remount_sync
+    path: "{{ item }}"
     state: absent
-  when: not (cvmfs_install_setuid_cvmfs_remount_sync | bool)
-
-- name: Download cvmfs_preload utility when desired
-  ansible.builtin.get_url:
-    url: https://cvmrepo.web.cern.ch/cvmrepo/preload/cvmfs_preload
-    dest: "{{ cvmfs_preload_path }}/cvmfs_preload"
-    owner: root
-    group: root
-    mode: 755
-  when: cvmfs_preload_install | bool
+  loop: "{{ cvmfs_absent_configs }}"
+  notify: Reload cvmfs

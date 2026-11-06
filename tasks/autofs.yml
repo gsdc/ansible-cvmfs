@@ -1,0 +1,38 @@
+---
+- name: nsswitch.conf automount 순서
+  ansible.builtin.replace:
+    path: /etc/nsswitch.conf
+    regexp: "^automount:.*$"
+    replace: "automount:  {{ cvmfs_nsswitch_automount }}"
+  when: cvmfs_nsswitch_automount | length > 0
+
+# 패키지 autofs.service 는 Restart=no 라 부팅 직후 sssd offline 등으로 한 번 실패하면 사람이
+# 재시작할 때까지 /cvmfs 전체가 죽어 있다. 실패한 automount 는 죽은 /cvmfs autofs 마운트(fd=-1)를
+# 남겨 재시작을 막을 수 있으므로 ExecStartPre 에서 그것만 lazy umount 한다.
+# daemon-reload 만 하고 autofs 는 재시작하지 않는다 (작업 영향 방지).
+- name: autofs 재시작 drop-in
+  when: cvmfs_autofs_restart_dropin | bool
+  block:
+    - name: drop-in 디렉토리
+      ansible.builtin.file:
+        path: /etc/systemd/system/autofs.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: restart.conf
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/autofs.service.d/restart.conf
+        content: |
+          [Unit]
+          StartLimitIntervalSec=0
+
+          [Service]
+          Restart=on-failure
+          RestartSec=30
+          ExecStartPre=-/bin/sh -c 'grep -qE "^[^ ]+ {{ cvmfs_mount_point }} autofs .*fd=-1" /proc/mounts && umount -l {{ cvmfs_mount_point }} || true'
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Daemon reload

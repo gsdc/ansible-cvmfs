@@ -1,0 +1,32 @@
+---
+- name: CernVM 저장소
+  when: cvmfs_install_repo | bool
+  block:
+    - name: CernVM GPG 키
+      ansible.builtin.copy:
+        src: "{{ 'RPM-GPG-KEY-CernVM-2048' if ansible_distribution_major_version | int >= 10 else 'RPM-GPG-KEY-CernVM' }}"
+        dest: /etc/pki/rpm-gpg/RPM-GPG-KEY-CernVM
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: CernVM yum 저장소
+      ansible.builtin.yum_repository:
+        file: cernvm
+        name: cernvm
+        description: CernVM packages
+        baseurl: http://cvmrepo.web.cern.ch/cvmrepo/yum/cvmfs/EL/$releasever/$basearch/
+        gpgkey: file:///etc/pki/rpm-gpg/RPM-GPG-KEY-CernVM
+        gpgcheck: true
+        enabled: true
+        protect: true
+
+- name: cvmfs-config 패키지
+  ansible.builtin.dnf:
+    name: "{{ cvmfs_config_package }}"
+  when: cvmfs_config_package is not none
+
+- name: cvmfs 패키지
+  ansible.builtin.dnf:
+    name: "{{ cvmfs_packages }}"
+    state: "{{ 'latest' if cvmfs_upgrade_client | bool else 'present' }}"

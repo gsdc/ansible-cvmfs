@@ -1,0 +1,48 @@
+---
+# cvmfs 캐시를 전용 LV 에 둔다. VG 를 못 찾으면(LVM 없음 등) 건너뛴다.
+# LV 는 키우기만 하고 줄이지 않는다 (extent 올림 때문에 계산값이 실제보다 수 MB 작게 나올 수 있음).
+- name: LVM 정보 수집
+  ansible.builtin.setup:
+    filter: ansible_lvm
+    gather_subset: ["!all", "!min", "hardware"]
+
+- name: 캐시 VG 결정
+  ansible.builtin.set_fact:
+    _cvmfs_cache_vg: >-
+      {%- set lvm = ansible_lvm if (ansible_lvm is defined and ansible_lvm is mapping) else {} -%}
+      {%- set vgs = lvm.get('vgs', {}) -%}
+      {%- set lvs = lvm.get('lvs', {}) -%}
+      {%- if cvmfs_cache_lv_vg -%}{{ cvmfs_cache_lv_vg }}
+      {%- elif 'cache' in vgs -%}cache
+      {%- elif 'var' in lvs -%}{{ lvs['var'].vg }}
+      {%- endif -%}
+
+- name: 캐시 LV 생성·확장 ({{ _cvmfs_cache_vg }}/{{ cvmfs_cache_lv_name }} {{ cvmfs_cache_lv_mb }}MB)
+  when: _cvmfs_cache_vg | length > 0
+  block:
+    - name: LV
+      community.general.lvol:
+        vg: "{{ _cvmfs_cache_vg }}"
+        lv: "{{ cvmfs_cache_lv_name }}"
+        size: "{{ cvmfs_cache_lv_mb }}"
+        shrink: false
+        resizefs: true
+
+    - name: 파일시스템
+      community.general.filesystem:
+        fstype: "{{ cvmfs_cache_lv_fstype }}"
+        dev: "/dev/mapper/{{ _cvmfs_cache_vg }}-{{ cvmfs_cache_lv_name }}"
+
+    - name: 마운트
+      ansible.posix.mount:
+        path: "{{ cvmfs_cache_base }}"
+        src: "/dev/mapper/{{ _cvmfs_cache_vg }}-{{ cvmfs_cache_lv_name }}"
+        fstype: "{{ cvmfs_cache_lv_fstype }}"
+        opts: defaults
+        state: mounted
+
+    - name: SELinux 레이블 복원
+      ansible.builtin.command: restorecon -iRv {{ cvmfs_cache_base }}
+      register: _cvmfs_restorecon
+      changed_when: _cvmfs_restorecon.stdout | length > 0
+      when: ansible_selinux is not defined or (ansible_selinux.status | default('disabled')) != 'disabled'

@@ -1,22 +1,14 @@
 ---
-# handlers file for galaxyproject.cvmfs
+- name: Daemon reload
+  ansible.builtin.systemd:
+    daemon_reload: true
 
 - name: Reload autofs
   ansible.builtin.service:
     name: autofs
     state: reloaded
 
-- name: Restart squid
-  ansible.builtin.service:
-    name: "{{ cvmfs_squid_service_name }}"
-    state: restarted
-
-- name: Restart apache
-  ansible.builtin.service:
-    name: "{{ cvmfs_apache_service_name }}"
-    state: restarted
-
-- name: Reload apache
-  ansible.builtin.service:
-    name: "{{ cvmfs_apache_service_name }}"
-    state: reloaded
+# 설정 변경을 마운트된 저장소에 반영한다 (마운트를 내리지 않음).
+- name: Reload cvmfs
+  ansible.builtin.command: cvmfs_config reload
+  when: cvmfs_reload_on_change | bool

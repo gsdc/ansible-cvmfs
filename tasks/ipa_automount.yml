@@ -1,0 +1,81 @@
+---
+# IPA automount location 을 cvmfs_ipa_automount_location 으로 전환한다.
+# location 의 /cvmfs 키는 program:/etc/auto.cvmfs 를 가리키므로, 이 프로그램 맵이 없는 채로
+# 전환하면 시스템이 깨진다. 그래서 아래 조건을 모두 확인한 뒤에만 전환한다.
+#   1. IPA 클라이언트(/etc/ipa/default.conf)이고 ipa-client-automount 가 있다
+#   2. 해당 location 의 auto.master 에 <cvmfs_mount_point> -> program:/etc/auto.cvmfs 키가 있다
+#      (호스트 keytab 으로 조회)
+#   3. /etc/auto.cvmfs 가 실행 가능한 파일로 있다
+#   4. 현재 location 이 미설정이거나 cvmfs_ipa_automount_replace 목록에 있다 (같으면 그대로)
+# ipa-client-automount 는 sssd.conf(autofs 응답기·ipa_automount_location)와
+# nsswitch(automount: sss files)를 고치고 sssd·autofs 를 재시작한다.
+
+- name: IPA automount 전환 사전 조건 조사
+  ansible.builtin.shell: |
+    loc=$(sed -n 's/^[[:space:]]*ipa_automount_location[[:space:]]*=[[:space:]]*//p' /etc/sssd/sssd.conf 2>/dev/null | tail -1)
+    ipa=n; test -f /etc/ipa/default.conf && ipa=y
+    tool=n; command -v ipa-client-automount >/dev/null 2>&1 && tool=y
+    prog=n; [ -f /etc/auto.cvmfs ] && [ -x /etc/auto.cvmfs ] && prog=y
+    map=n
+    if [ "$ipa" = y ] && [ "$tool" = y ] && command -v ipa >/dev/null 2>&1; then
+      cc=$(mktemp)
+      if KRB5CCNAME=FILE:$cc kinit -k >/dev/null 2>&1; then
+        KRB5CCNAME=FILE:$cc ipa automountkey-find '{{ cvmfs_ipa_automount_location }}' auto.master \
+          --key='{{ cvmfs_mount_point }}' 2>/dev/null | grep -q 'program:/etc/auto.cvmfs' && map=y
+      else
+        map=nokinit
+      fi
+      rm -f "$cc"
+    fi
+    echo "loc=${loc:-none} ipa=$ipa tool=$tool prog=$prog map=$map"
+  register: _cvmfs_amprobe
+  changed_when: false
+  check_mode: false
+
+- name: IPA automount 전환 판정
+  ansible.builtin.set_fact:
+    _cvmfs_am: "{{ dict(_cvmfs_amprobe.stdout.split() | map('split', '=') | list) }}"
+
+- name: IPA automount 전환 판정
+  ansible.builtin.set_fact:
+    _cvmfs_am_ready: >-
+      {{ _cvmfs_am.ipa == 'y' and _cvmfs_am.tool == 'y' and _cvmfs_am.map == 'y' and _cvmfs_am.prog == 'y' }}
+    _cvmfs_am_switch: >-
+      {{ _cvmfs_am.ipa == 'y' and _cvmfs_am.tool == 'y' and _cvmfs_am.map == 'y' and _cvmfs_am.prog == 'y'
+         and _cvmfs_am.loc != cvmfs_ipa_automount_location
+         and (_cvmfs_am.loc == 'none' or _cvmfs_am.loc in cvmfs_ipa_automount_replace) }}
+
+- name: IPA automount 전환 판정 결과
+  ansible.builtin.debug:
+    msg: >-
+      location={{ _cvmfs_am.loc }} ipa-client-automount={{ _cvmfs_am.tool }}
+      /etc/auto.cvmfs={{ _cvmfs_am.prog }} IPA {{ cvmfs_ipa_automount_location }} 맵={{ _cvmfs_am.map }}
+      -> {{ (cvmfs_ipa_automount_location ~ ' 로 전환') if _cvmfs_am_switch | bool else '그대로 둠' }}
+
+- name: autofs start-override.conf(sss 인스턴스 강제 검사) 제거
+  ansible.builtin.shell: |
+    f=/etc/systemd/system/autofs.service.d/start-override.conf
+    [ -f "$f" ] || exit 0
+    mv "$f" /root/autofs-start-override.conf.removed && systemctl daemon-reload && echo removed
+  register: _cvmfs_amoverride
+  changed_when: "'removed' in _cvmfs_amoverride.stdout"
+  when:
+    - cvmfs_ipa_automount_remove_start_override | bool
+    - _cvmfs_am_ready | bool
+    - _cvmfs_am_switch | bool or _cvmfs_am.loc == cvmfs_ipa_automount_location
+
+- name: IPA automount location 설정
+  ansible.builtin.shell: |
+    # 다른 location 으로 설정돼 있으면 먼저 해제 (해제할 게 없으면 무시)
+    if [ "{{ _cvmfs_am.loc }}" != none ]; then ipa-client-automount --uninstall -U 2>&1 || true; fi
+    ipa-client-automount --location='{{ cvmfs_ipa_automount_location }}' -U 2>&1
+  register: _cvmfs_amset
+  when: _cvmfs_am_switch | bool
+
+- name: IPA automount 설정 결과 확인
+  ansible.builtin.shell: >-
+    sed -n 's/^[[:space:]]*ipa_automount_location[[:space:]]*=[[:space:]]*//p' /etc/sssd/sssd.conf | tail -1
+  register: _cvmfs_amcheck
+  changed_when: false
+  failed_when: _cvmfs_amcheck.stdout | trim != cvmfs_ipa_automount_location
+  when: _cvmfs_amset is changed

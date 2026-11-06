@@ -1,39 +1,34 @@
 ---
-# tasks file for galaxyproject.cvmfs
+- name: 캐시 전용 LV
+  ansible.builtin.include_tasks: cache_lv.yml
+  when: cvmfs_cache_lv | bool
 
-- name: Set OS-specific variables
-  ansible.builtin.include_vars: "{{ ansible_os_family | lower }}.yml"
+- name: 패키지·저장소
+  ansible.builtin.include_tasks: install.yml
 
-- name: Set facts for Galaxy CVMFS config repository, if enabled
-  ansible.builtin.set_fact:
-    cvmfs_config_repo: "{{ galaxy_cvmfs_config_repo }}"
-  when: galaxy_cvmfs_repos_enabled and galaxy_cvmfs_repos_enabled == 'config-repo'
-
-- name: Set facts for Galaxy CVMFS static repositories, if enabled
-  ansible.builtin.set_fact:
-    cvmfs_keys: "{{ cvmfs_keys + galaxy_cvmfs_keys }}"
-    cvmfs_repositories: "{{ cvmfs_repositories + galaxy_cvmfs_repositories }}"
-    cvmfs_server_urls: "{{ cvmfs_server_urls + galaxy_cvmfs_server_urls }}"
-  when: galaxy_cvmfs_repos_enabled and galaxy_cvmfs_repos_enabled != 'config-repo'
-
-- name: Set facts for CVMFS config repository, if enabled
-  ansible.builtin.set_fact:
-    cvmfs_keys: "{{ cvmfs_keys + [cvmfs_config_repo.key] }}"
-  # In Ansible >= 2.10 this will be | truthy
-  when: cvmfs_config_repo | length > 0
-
-- name: Include Client Tasks
+- name: 클라이언트 설정
   ansible.builtin.include_tasks: client.yml
-  when: "'cvmfsclients' in group_names or cvmfs_role == 'client'"
 
-- name: Include Stratum1 Tasks
-  ansible.builtin.include_tasks: stratum1.yml
-  when: "'cvmfsstratum1servers' in group_names or cvmfs_role == 'stratum1'"
+- name: autofs 설정
+  ansible.builtin.include_tasks: autofs.yml
 
-- name: Include Stratum0 Tasks
-  ansible.builtin.include_tasks: stratum0.yml
-  when: "'cvmfsstratum0servers' in group_names or cvmfs_role == 'stratum0'"
+# 반드시 패키지 설치(/etc/auto.cvmfs 생성) 뒤
+- name: IPA automount location 전환
+  ansible.builtin.include_tasks: ipa_automount.yml
+  when: cvmfs_ipa_automount_location | length > 0
 
-- name: Include localproxy Tasks
-  ansible.builtin.include_tasks: localproxy.yml
-  when: "'cvmfslocalproxies' in group_names or cvmfs_role == 'localproxy'"
+- name: 설정 변경 반영 (handler 를 여기서 실행)
+  ansible.builtin.meta: flush_handlers
+
+- name: autofs 재시작
+  ansible.builtin.service:
+    name: autofs
+    state: restarted
+  when: cvmfs_restart_autofs | bool
+
+- name: cvmfs_config probe
+  ansible.builtin.command: cvmfs_config probe
+  changed_when: false
+  when:
+    - cvmfs_probe | bool
+    - not ansible_check_mode
